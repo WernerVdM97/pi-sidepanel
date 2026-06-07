@@ -29,7 +29,31 @@ import {
 	truncateToWidth,
 	visibleWidth,
 } from "@earendil-works/pi-tui";
-import { sanitizeLine } from "./sanitize.ts";
+
+// ── Defensive line sanitizer ────────────────────────────────────────────
+
+/**
+ * Strip dangerous terminal control sequences while preserving SGR color
+ * codes. Inlined to avoid local .ts import (pi's extension loader may not
+ * resolve transitive .ts modules).
+ */
+function sanitizeLine(line: string): string {
+	line = line.replace(/\r\n?|\n/g, "");
+	line = line.replace(/\x1b\[[?=]?[\d;]*[A-Za-ln-z~]/g, "");
+	line = line.replace(/\x1bc/g, "");
+	line = line.replace(/\x1b\].*?(?:\x07|\x1b\\)/g, "");
+	line = line.replace(/\x1b[()*+][A-Za-z0-9]/g, "");
+	line = line.replace(/[\x0e\x0f]/g, "");
+	for (let i = 0; i < line.length && line.includes("\x08"); i++) {
+		const prev = line;
+		line = line.replace(/.\x08/g, "");
+		if (line === prev) {
+			line = line.replace(/\x08/g, "");
+			break;
+		}
+	}
+	return line;
+}
 
 // ── Interfaces ────────────────────────────────────────────────────────────
 
@@ -240,10 +264,6 @@ class SidepanelComponent implements Component {
 
 		if (active) {
 			// ── Defensive tab rendering ──────────────────────────
-			// Tab components can be buggy or deliberately return
-			// malformed content. We guard against: thrown exceptions,
-			// null / undefined / non-array returns, embedded newlines,
-			// ANSI cursor-injection, and width overflows.
 			let tabLines: string[] = [];
 			try {
 				const comp = active.provider.component as any;
@@ -254,32 +274,38 @@ class SidepanelComponent implements Component {
 				if (Array.isArray(raw)) {
 					tabLines = raw.filter((l): l is string => typeof l === "string");
 				}
+
+				// Sanitize every line
+				const clean = tabLines.map((l) => sanitizeLine(l));
+
+				// Clamp to viewport
+				const visible = clean.slice(
+					this.scrollOffset,
+					this.scrollOffset + contentH,
+				);
+
+				for (const line of visible) {
+					const truncated = truncateToWidth(line, innerW, "");
+					const vw = visibleWidth(truncated);
+					const padding = " ".repeat(Math.max(0, innerW - vw));
+					lines.push(B("│") + truncated + padding + B("│"));
+				}
+
+				// Pad remaining space
+				const rendered = visible.length;
+				for (let i = rendered; i < contentH; i++) {
+					lines.push(B("│") + " ".repeat(innerW) + B("│"));
+				}
 			} catch (err) {
-				const errLine = ` Error: ${err}`;
-				tabLines = [errLine];
-			}
-
-			// Sanitize every line — strip newlines, CR, dangerous ANSI
-			const clean = tabLines.map((l) => sanitizeLine(l));
-
-			// Clamp to viewport
-			const visible = clean.slice(
-				this.scrollOffset,
-				this.scrollOffset + contentH,
-			);
-
-			for (const line of visible) {
-				// Force-clamp width (belt and suspenders)
-				const truncated = truncateToWidth(line, innerW, "");
+				// Render + sanitize failed — show error and pad box
+				const errLine = ` ! ${err}`;
+				const truncated = truncateToWidth(errLine, innerW);
 				const vw = visibleWidth(truncated);
 				const padding = " ".repeat(Math.max(0, innerW - vw));
-				lines.push(B("│") + truncated + padding + B("│"));
-			}
-
-			// Pad remaining space to keep consistent box height
-			const rendered = visible.length;
-			for (let i = rendered; i < contentH; i++) {
-				lines.push(B("│") + " ".repeat(innerW) + B("│"));
+				lines.push(B("│") + th.fg("error", truncated) + padding + B("│"));
+				for (let i = 1; i < contentH; i++) {
+					lines.push(B("│") + " ".repeat(innerW) + B("│"));
+				}
 			}
 		} else {
 			lines.push(
