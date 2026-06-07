@@ -83,7 +83,22 @@ pi.events.emit("sidepanel:invalidate", {});
 
 ### Theme Support
 
-If your component exposes a `setTheme(theme)` method, the framework calls it before each render. Use it for color-coded output that follows pi's active theme:
+If your component exposes a `setTheme(theme)` method, the framework calls it before each render. Use it for color-coded output that follows pi's active theme.
+
+### Activation Lifecycle
+
+Components can optionally implement `onActivate()` and `onDeactivate()` — called when the user switches to/from your tab. Use for pausing work, starting timers, or deferring expensive updates:
+
+```typescript
+class MyComponent {
+  onActivate(): void {
+    // Tab just became visible — start polling, resume updates
+  }
+  onDeactivate(): void {
+    // Tab hidden — pause timers, stop fetching
+  }
+}
+```
 
 ```typescript
 interface ThemeColors {

@@ -86,12 +86,16 @@ class SidepanelComponent implements Component {
 		const existing = this.tabs.findIndex(
 			(t) => t.provider.id === tab.id,
 		);
+		const wasFirst = this.tabs.length === 0;
 		if (existing >= 0) {
 			this.tabs[existing] = { provider: tab };
 		} else {
 			this.tabs.push({ provider: tab });
 		}
-		if (this.tabs.length === 1) this.activeIdx = 0;
+		if (wasFirst) {
+			this.activeIdx = 0;
+			this.activateTab();
+		}
 		this.invalidate();
 		this.tui.requestRender();
 	}
@@ -99,10 +103,13 @@ class SidepanelComponent implements Component {
 	removeTab(id: string): void {
 		const idx = this.tabs.findIndex((t) => t.provider.id === id);
 		if (idx < 0) return;
+		const wasActive = idx === this.activeIdx;
+		if (wasActive) this.deactivateTab();
 		this.tabs.splice(idx, 1);
 		if (this.activeIdx >= this.tabs.length) {
 			this.activeIdx = Math.max(0, this.tabs.length - 1);
 		}
+		if (wasActive && this.tabs.length > 0) this.activateTab();
 		this.invalidate();
 		this.tui.requestRender();
 	}
@@ -133,7 +140,9 @@ class SidepanelComponent implements Component {
 		// Tab / Shift+Tab: switch tabs
 		if (matchesKey(data, "tab")) {
 			if (this.tabs.length > 0) {
+				this.deactivateTab();
 				this.activeIdx = (this.activeIdx + 1) % this.tabs.length;
+				this.activateTab();
 				this.scrollOffset = 0;
 				this.invalidate();
 				this.tui.requestRender();
@@ -143,8 +152,10 @@ class SidepanelComponent implements Component {
 
 		if (matchesKey(data, "shift+tab")) {
 			if (this.tabs.length > 0) {
+				this.deactivateTab();
 				this.activeIdx =
 					(this.activeIdx - 1 + this.tabs.length) % this.tabs.length;
+				this.activateTab();
 				this.scrollOffset = 0;
 				this.invalidate();
 				this.tui.requestRender();
@@ -155,8 +166,10 @@ class SidepanelComponent implements Component {
 		// 1-9: jump to tab by index
 		if (data.length === 1 && data >= "1" && data <= "9") {
 			const idx = Number.parseInt(data) - 1;
-			if (idx < this.tabs.length) {
+			if (idx < this.tabs.length && idx !== this.activeIdx) {
+				this.deactivateTab();
 				this.activeIdx = idx;
+				this.activateTab();
 				this.scrollOffset = 0;
 				this.invalidate();
 				this.tui.requestRender();
@@ -304,6 +317,22 @@ class SidepanelComponent implements Component {
 	}
 
 	// ── private helpers ───────────────────────────────────────────────
+
+	private activateTab(): void {
+		const tab = this.tabs[this.activeIdx];
+		if (tab) {
+			const comp = tab.provider.component as any;
+			if (typeof comp.onActivate === "function") comp.onActivate();
+		}
+	}
+
+	private deactivateTab(): void {
+		const tab = this.tabs[this.activeIdx];
+		if (tab) {
+			const comp = tab.provider.component as any;
+			if (typeof comp.onDeactivate === "function") comp.onDeactivate();
+		}
+	}
 
 	private activeTab(): RegisteredTab | undefined {
 		return this.tabs[this.activeIdx];
