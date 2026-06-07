@@ -1,0 +1,9 @@
+{
+  "name": "pi-sidepanel",
+  "version": "0.1.0",
+  "description": "Generic side-panel display engine for pi coding agent — provides a persistent right-side overlay with tabbed views and an event-driven plugin API",
+  "keywords": ["pi-package"],
+  "pi": {
+    "extensions": ["./index.ts"]
+  }
+}
