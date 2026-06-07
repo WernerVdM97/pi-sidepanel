@@ -17,7 +17,11 @@
  *   /sidepanel auto-off — disable auto-open
  */
 
-import type { ExtensionAPI, ExtensionCommandContext, Theme } from "@earendil-works/pi-coding-agent";
+import type {
+	ExtensionAPI,
+	ExtensionCommandContext,
+	Theme,
+} from "@earendil-works/pi-coding-agent";
 import {
 	type Component,
 	type TUI,
@@ -25,6 +29,7 @@ import {
 	truncateToWidth,
 	visibleWidth,
 } from "@earendil-works/pi-tui";
+import { sanitizeLine } from "./sanitize.ts";
 
 // ── Interfaces ────────────────────────────────────────────────────────────
 
@@ -83,18 +88,16 @@ class SidepanelComponent implements Component {
 
 	addTab(tab: TabProvider): void {
 		// Deduplicate by id
-		const existing = this.tabs.findIndex(
-			(t) => t.provider.id === tab.id,
-		);
-		const wasFirst = this.tabs.length === 0;
+		const existing = this.tabs.findIndex((t) => t.provider.id === tab.id);
 		if (existing >= 0) {
 			this.tabs[existing] = { provider: tab };
 		} else {
 			this.tabs.push({ provider: tab });
-		}
-		if (wasFirst) {
-			this.activeIdx = 0;
-			this.activateTab();
+			// Activate the first tab added
+			if (this.tabs.length === 1) {
+				this.activeIdx = 0;
+				this.activateTab();
+			}
 		}
 		this.invalidate();
 		this.tui.requestRender();
@@ -126,39 +129,32 @@ class SidepanelComponent implements Component {
 		this.tui.requestRender();
 	}
 
-	invalidateTabAll(): void {
-		this.invalidateTab(undefined);
-	}
-
 	close(): void {
 		this.done();
+	}
+
+	/** Request a re-render — exposed for focus toggling from outside */
+	requestRender(): void {
+		this.tui.requestRender();
 	}
 
 	// ── Component interface ───────────────────────────────────────────
 
 	handleInput(data: string): void {
-		// Tab / Shift+Tab: switch tabs
+		// Tab: next tab
 		if (matchesKey(data, "tab")) {
 			if (this.tabs.length > 0) {
-				this.deactivateTab();
-				this.activeIdx = (this.activeIdx + 1) % this.tabs.length;
-				this.activateTab();
-				this.scrollOffset = 0;
-				this.invalidate();
-				this.tui.requestRender();
+				this.switchToTab((this.activeIdx + 1) % this.tabs.length);
 			}
 			return;
 		}
 
+		// Shift+Tab: previous tab
 		if (matchesKey(data, "shift+tab")) {
 			if (this.tabs.length > 0) {
-				this.deactivateTab();
-				this.activeIdx =
-					(this.activeIdx - 1 + this.tabs.length) % this.tabs.length;
-				this.activateTab();
-				this.scrollOffset = 0;
-				this.invalidate();
-				this.tui.requestRender();
+				this.switchToTab(
+					(this.activeIdx - 1 + this.tabs.length) % this.tabs.length,
+				);
 			}
 			return;
 		}
@@ -166,13 +162,8 @@ class SidepanelComponent implements Component {
 		// 1-9: jump to tab by index
 		if (data.length === 1 && data >= "1" && data <= "9") {
 			const idx = Number.parseInt(data) - 1;
-			if (idx < this.tabs.length && idx !== this.activeIdx) {
-				this.deactivateTab();
-				this.activeIdx = idx;
-				this.activateTab();
-				this.scrollOffset = 0;
-				this.invalidate();
-				this.tui.requestRender();
+			if (idx < this.tabs.length) {
+				this.switchToTab(idx);
 			}
 			return;
 		}
@@ -183,7 +174,7 @@ class SidepanelComponent implements Component {
 			return;
 		}
 
-		// F2: toggle (close from panel)
+		// F2: close panel
 		if (matchesKey(data, "f2")) {
 			this.done();
 			return;
@@ -216,8 +207,10 @@ class SidepanelComponent implements Component {
 		const innerW = Math.max(1, width - 2); // inside borders
 		const lines: string[] = [];
 
-		const B = (s: string) =>
-			this.focused ? th.fg("border", s) : th.fg("borderMuted", s);
+		// Focus distinction: bold borders when panel has focus,
+		// dim borders when unfocused. Bold vs non-bold is visible
+		// in every terminal regardless of color scheme.
+		const B = (s: string) => (this.focused ? th.bold(s) : th.fg("dim", s));
 
 		// Top border
 		lines.push(B(`╭${"─".repeat(innerW)}╮`));
@@ -234,51 +227,59 @@ class SidepanelComponent implements Component {
 		} else {
 			// No tabs
 			lines.push(
-				B("│") + th.fg("dim", this.padCenter(" No tabs registered ", innerW)) + B("│"),
+				B("│") +
+					th.fg("dim", this.padCenter(" No tabs registered ", innerW)) +
+					B("│"),
 			);
 			lines.push(B("├") + B("─".repeat(innerW)) + B("┤"));
 		}
 
 		// Content area
-		// Reserve space for header (2-3 lines) + footer (2 lines).
-		// The TUI will clip the panel if it exceeds terminal height,
-		// so we're generous with the content area.
 		const contentH = 40;
 		const active = this.activeTab();
 
 		if (active) {
+			// ── Defensive tab rendering ──────────────────────────
+			// Tab components can be buggy or deliberately return
+			// malformed content. We guard against: thrown exceptions,
+			// null / undefined / non-array returns, embedded newlines,
+			// ANSI cursor-injection, and width overflows.
+			let tabLines: string[] = [];
 			try {
-				// Pass theme to tab components that support it
 				const comp = active.provider.component as any;
 				if (typeof comp.setTheme === "function") {
 					comp.setTheme(this.theme);
 				}
-				const tabLines = active.provider.component.render(innerW);
-				const visible = tabLines.slice(
-					this.scrollOffset,
-					this.scrollOffset + contentH,
-				);
-				for (const line of visible) {
-					// Pad each line to innerW so ANSI-colored content
-					// aligns the right border correctly.
-					const truncated = truncateToWidth(line, innerW, "");
-					const vw = visibleWidth(truncated);
-					const padding = " ".repeat(Math.max(0, innerW - vw));
-					lines.push(B("│") + truncated + padding + B("│"));
-				}
-				// Pad remaining space
-				const rendered = visible.length;
-				for (let i = rendered; i < contentH; i++) {
-					lines.push(B("│") + " ".repeat(innerW) + B("│"));
+				const raw = active.provider.component.render(innerW);
+				if (Array.isArray(raw)) {
+					tabLines = raw.filter((l): l is string => typeof l === "string");
 				}
 			} catch (err) {
 				const errLine = ` Error: ${err}`;
-				const truncated = truncateToWidth(errLine, innerW);
+				tabLines = [errLine];
+			}
+
+			// Sanitize every line — strip newlines, CR, dangerous ANSI
+			const clean = tabLines.map((l) => sanitizeLine(l));
+
+			// Clamp to viewport
+			const visible = clean.slice(
+				this.scrollOffset,
+				this.scrollOffset + contentH,
+			);
+
+			for (const line of visible) {
+				// Force-clamp width (belt and suspenders)
+				const truncated = truncateToWidth(line, innerW, "");
 				const vw = visibleWidth(truncated);
 				const padding = " ".repeat(Math.max(0, innerW - vw));
-				lines.push(
-					B("│") + th.fg("error", truncated) + padding + B("│"),
-				);
+				lines.push(B("│") + truncated + padding + B("│"));
+			}
+
+			// Pad remaining space to keep consistent box height
+			const rendered = visible.length;
+			for (let i = rendered; i < contentH; i++) {
+				lines.push(B("│") + " ".repeat(innerW) + B("│"));
 			}
 		} else {
 			lines.push(
@@ -288,7 +289,7 @@ class SidepanelComponent implements Component {
 			);
 		}
 
-			// Footer separator
+		// Footer separator
 		lines.push(B("├") + B("─".repeat(innerW)) + B("┤"));
 
 		// Footer hints with padding for ANSI alignment
@@ -310,13 +311,23 @@ class SidepanelComponent implements Component {
 	invalidate(): void {
 		this.cachedWidth = undefined;
 		this.cachedLines = undefined;
-		// Invalidate all tab components so they pick up theme changes + data changes
+		// Invalidate all tab components so they pick up theme + data changes
 		for (const t of this.tabs) {
 			t.provider.component.invalidate();
 		}
 	}
 
 	// ── private helpers ───────────────────────────────────────────────
+
+	private switchToTab(idx: number): void {
+		if (this.tabs.length === 0) return;
+		this.deactivateTab();
+		this.activeIdx = idx;
+		this.activateTab();
+		this.scrollOffset = 0;
+		this.invalidate();
+		this.tui.requestRender();
+	}
 
 	private activateTab(): void {
 		const tab = this.tabs[this.activeIdx];
@@ -340,7 +351,6 @@ class SidepanelComponent implements Component {
 
 	private renderTabBar(width: number): string {
 		const th = this.theme;
-		// Build labeled segments
 		const segments: { label: string; active: boolean; idx: number }[] =
 			this.tabs.map((t, i) => ({
 				label: t.provider.label,
@@ -348,12 +358,10 @@ class SidepanelComponent implements Component {
 				idx: i,
 			}));
 
-		// Calculate available space
 		const separator = ` ${th.fg("border", "│")} `;
 		const sepLen = visibleWidth(separator);
 		const totalSepLen = (segments.length - 1) * sepLen;
 
-		// Distribute width: last tab gets remainder so bar fills exactly `width`
 		const available = width - totalSepLen;
 		const perTab = Math.floor(available / segments.length);
 
@@ -361,18 +369,14 @@ class SidepanelComponent implements Component {
 		for (let i = 0; i < segments.length; i++) {
 			const seg = segments[i]!;
 			const isLast = i === segments.length - 1;
-			const alloc = isLast
-				? available - i * perTab
-				: perTab;
+			const alloc = isLast ? available - i * perTab : perTab;
 			let label = seg.active
 				? th.fg("accent", th.bold(seg.label))
 				: th.fg("muted", seg.label);
 
-			// If too long for allocation, truncate with ellipsis
 			if (visibleWidth(label) > alloc) {
 				label = truncateToWidth(label, alloc, "…", false);
 			}
-			// Pad to fill allocation
 			const padLen = Math.max(0, alloc - visibleWidth(label));
 			label = label + " ".repeat(padLen);
 
@@ -388,7 +392,10 @@ class SidepanelComponent implements Component {
 
 		if (this.tabs.length > 1) {
 			lines.push(
-				th.fg("dim", truncateToWidth(" Tab/1-9 switch │ F2 close │ F3 chat", width, "")),
+				th.fg(
+					"dim",
+					truncateToWidth(" Tab/1-9 switch │ F2 close │ F3 chat", width, ""),
+				),
 			);
 		} else {
 			lines.push(
@@ -438,7 +445,8 @@ export default function (pi: ExtensionAPI) {
 	}): void {
 		if (isOpen) return;
 
-		// Flush any pending registrations (deduplicated against tabs)
+		// Flush pending registrations — only path that mutates tabs when
+		// the panel is closed (inline handler skips direct mutation).
 		for (const p of pendingRegistrations) {
 			const existing = tabs.findIndex((t) => t.provider.id === p.id);
 			if (existing >= 0) {
@@ -449,8 +457,6 @@ export default function (pi: ExtensionAPI) {
 		}
 		pendingRegistrations = [];
 
-		// Fire-and-forget — don't await. The panel stays open until
-		// the user dismisses it (Esc). The .then() handles cleanup.
 		ctx.ui
 			.custom<void>(
 				(tui, theme, _kb, done) => {
@@ -459,19 +465,22 @@ export default function (pi: ExtensionAPI) {
 						theme,
 						tabs,
 						activeTabIndex,
+						// done callback: panel dismissed — signal the overlay
 						() => {
-							panelComponent = null;
-							overlayHandle = null;
 							done();
 						},
+						// onUnfocus: F3 pressed in panel.
+						// Set muted state + invalidate, then request a render.
+						// Defer unfocus by one tick so the TUI has a chance
+						// to render the muted borders before input routing
+						// moves away from the overlay.
 						() => {
-							// F3 unfocus: return to chat, panel stays visible
 							if (panelComponent) {
 								panelComponent.focused = false;
 								panelComponent.invalidate();
 							}
-							overlayHandle?.unfocus?.();
 							tui.requestRender();
+							setTimeout(() => overlayHandle?.unfocus?.(), 0);
 						},
 					);
 					return panelComponent;
@@ -530,6 +539,7 @@ export default function (pi: ExtensionAPI) {
 				if (panelComponent) {
 					panelComponent.focused = true;
 					panelComponent.invalidate();
+					panelComponent.requestRender();
 				}
 			}
 		},
@@ -550,7 +560,6 @@ export default function (pi: ExtensionAPI) {
 				return;
 			}
 
-			// Toggle
 			if (isOpen) {
 				panelComponent?.close();
 			} else {
@@ -563,7 +572,6 @@ export default function (pi: ExtensionAPI) {
 
 	pi.on("session_start", () => {
 		hasOpenedThisSession = false;
-		// Clear tabs on session reset
 		tabs.length = 0;
 		pendingRegistrations = [];
 		activeTabIndex = 0;
@@ -576,11 +584,7 @@ export default function (pi: ExtensionAPI) {
 
 	// ── Auto-open triggers ─────────────────────────────────────────────
 
-	for (const event of [
-		"tool_call",
-		"agent_start",
-		"message_start",
-	] as const) {
+	for (const event of ["tool_call", "agent_start", "message_start"] as const) {
 		pi.on(event, (_event: any, ctx: any) => {
 			maybeAutoOpen(ctx);
 		});
@@ -589,23 +593,12 @@ export default function (pi: ExtensionAPI) {
 	// ── Registration API (via pi.events) ───────────────────────────────
 
 	pi.events.on("sidepanel:register", (tab: TabProvider) => {
-		// Deduplicate
-		const existing = tabs.findIndex((t) => t.provider.id === tab.id);
-		if (existing >= 0) {
-			tabs[existing] = { provider: tab };
-		} else {
-			tabs.push({ provider: tab });
-		}
-
-		// If panel is open, add to live component
 		if (panelComponent) {
+			// Panel open: let addTab handle dedup + array mutation
 			panelComponent.addTab(tab);
 		} else {
-			// Buffer registration until panel opens
-			// Avoid duplicates in pending
-			const pendingIdx = pendingRegistrations.findIndex(
-				(p) => p.id === tab.id,
-			);
+			// Panel closed: buffer for flush in openPanel()
+			const pendingIdx = pendingRegistrations.findIndex((p) => p.id === tab.id);
 			if (pendingIdx >= 0) {
 				pendingRegistrations[pendingIdx] = tab;
 			} else {
@@ -615,13 +608,14 @@ export default function (pi: ExtensionAPI) {
 	});
 
 	pi.events.on("sidepanel:unregister", ({ id }: { id: string }) => {
+		// Remove from module-level tabs list
 		const idx = tabs.findIndex((t) => t.provider.id === id);
 		if (idx >= 0) tabs.splice(idx, 1);
 		if (activeTabIndex >= tabs.length) {
 			activeTabIndex = Math.max(0, tabs.length - 1);
 		}
 
-		// Remove from pending too
+		// Remove from pending
 		const pendingIdx = pendingRegistrations.findIndex((p) => p.id === id);
 		if (pendingIdx >= 0) pendingRegistrations.splice(pendingIdx, 1);
 
@@ -630,22 +624,15 @@ export default function (pi: ExtensionAPI) {
 		}
 	});
 
-	pi.events.on(
-		"sidepanel:invalidate",
-		({ tabId }: { tabId?: string }) => {
-			if (panelComponent) {
-				panelComponent.invalidateTab(tabId);
-			}
-		},
-	);
+	pi.events.on("sidepanel:invalidate", ({ tabId }: { tabId?: string }) => {
+		if (panelComponent) {
+			panelComponent.invalidateTab(tabId);
+		}
+	});
 
 	// Emit ready from session_start so tab plugins can register
 	// after both extensions have loaded (avoids load-order issues)
 	pi.on("session_start", () => {
-		// Slight delay to let framework's own session_start reset complete first.
-		// The framework's session_start runs first (alphabetical order),
-		// then this ready event fires, then tab plugins' session_start handlers
-		// emit sidepanel:register.
 		setTimeout(() => {
 			pi.events.emit("sidepanel:ready", {});
 		}, 0);
