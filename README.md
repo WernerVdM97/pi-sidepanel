@@ -10,7 +10,7 @@ A decoupled, content-agnostic side-panel display engine for [pi](https://pi.dev)
 
 ```bash
 # Clone the repo and install as a pi package
-pi install git:github.com/you/pi-sidepanel
+pi install git:github.com/WernerVdM97/pi-sidepanel
 
 # Or for development, symlink into your extensions directory
 ln -s $(pwd)/pi-sidepanel ~/.pi/agent/extensions/pi-sidepanel
