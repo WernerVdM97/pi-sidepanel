@@ -49,8 +49,6 @@ All four tabs are **interactive** — each responds to keyboard input for naviga
 
 </details>
 
-Also available as an [interactive HTML preview](pi-sidepanel-tabs-preview.html) with full Catppuccin theme styling.
-
 ## Installation
 
 ```bash
