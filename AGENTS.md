@@ -544,10 +544,11 @@ node --test test/*.test.ts
 
 | Tab ID | Label | Package | What it tracks |
 |--------|-------|---------|----------------|
-| `"bash"` | Bash | `pi-sidepanel-bash` | Bash commands — vim-style cursor, search, expand/collapse output |
+| `"dash"` | Dash | `pi-sidepanel-dash` | Session dashboard — goal, model, turn, context budget, tool defs |
 | `"explorer"` | Inputs | `pi-sidepanel-inputs` | File explorer tree from read/ls/find calls — collapsible, color-coded |
-| `"files"` | Outputs | `pi-sidepanel-outputs` | Modified files from write/edit — [W]/[E] tags, always-expanded tree |
 | `"skills"` | Skills | `pi-sidepanel-skills` | Fetched skills — `/` explicit or `~` auto-loaded, with descriptions |
+| `"files"` | Outputs | `pi-sidepanel-outputs` | Modified files from write/edit — [W]/[E] tags, always-expanded tree |
+| `"bash"` | Bash | `pi-sidepanel-bash` | Bash commands — vim-style cursor, search, expand/collapse output |
 
 ## Idioms and patterns
 

@@ -12,18 +12,34 @@ These are separate extensions that ship independently:
 
 | Plugin | Description |
 |--------|-------------|
-| [`pi-sidepanel-bash`](https://github.com/WernerVdM97/pi-sidepanel-bash) | Bash command history — vim-style cursor, search, output viewer, theme colors |
+| [`pi-sidepanel-dash`](https://github.com/WernerVdM97/pi-sidepanel-dash) | Session dashboard — goal, model, turn, context budget, tool definitions |
 | [`pi-sidepanel-inputs`](https://github.com/WernerVdM97/pi-sidepanel-inputs) | File explorer tree — interactive, collapsible, color-coded by read status |
-| [`pi-sidepanel-outputs`](https://github.com/WernerVdM97/pi-sidepanel-outputs) | Modified files tracker — [W]rite/[E]dit tags, always-expanded tree |
 | [`pi-sidepanel-skills`](https://github.com/WernerVdM97/pi-sidepanel-skills) | Fetched skills — `/` explicit or `~` auto-loaded, with descriptions |
+| [`pi-sidepanel-outputs`](https://github.com/WernerVdM97/pi-sidepanel-outputs) | Modified files tracker — [W]rite/[E]dit tags, always-expanded tree |
+| [`pi-sidepanel-bash`](https://github.com/WernerVdM97/pi-sidepanel-bash) | Bash command history — vim-style cursor, search, output viewer, theme colors |
 
 ## Installation
 
-```bash
-# Clone the repo and install as a pi package
-pi install git:github.com/WernerVdM97/pi-sidepanel
+### Framework only
 
-# Or for development, symlink into your extensions directory
+```bash
+pi install git:github.com/WernerVdM97/pi-sidepanel
+```
+
+### Full bundle (framework + all 5 tabs)
+
+```bash
+# Install framework first
+pi install git:github.com/WernerVdM97/pi-sidepanel
+# Then all tab plugins
+for repo in dash inputs skills outputs bash; do
+  pi install git:github.com/WernerVdM97/pi-sidepanel-$repo
+done
+```
+
+### Development symlink
+
+```bash
 ln -s $(pwd)/pi-sidepanel ~/.pi/agent/extensions/pi-sidepanel
 ```
 
