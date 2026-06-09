@@ -10,10 +10,10 @@ These are separate extensions that ship independently:
 
 | Plugin | Description |
 |--------|-------------|
-| [`pi-sidepanel-bash`](../pi-sidepanel-bash) | Bash command history — vim-style cursor, search, output viewer, theme colors |
-| [`pi-sidepanel-inputs`](../pi-sidepanel-inputs) | File explorer tree — interactive, collapsible, color-coded by read status |
-| [`pi-sidepanel-outputs`](../pi-sidepanel-outputs) | Modified files tracker — [W]rite/[E]dit tags, always-expanded tree |
-| [`pi-sidepanel-skills`](../pi-sidepanel-skills) | Fetched skills — `/` explicit or `~` auto-loaded, with descriptions |
+| [`pi-sidepanel-bash`](https://github.com/WernerVdM97/pi-sidepanel-bash) | Bash command history — vim-style cursor, search, output viewer, theme colors |
+| [`pi-sidepanel-inputs`](https://github.com/WernerVdM97/pi-sidepanel-inputs) | File explorer tree — interactive, collapsible, color-coded by read status |
+| [`pi-sidepanel-outputs`](https://github.com/WernerVdM97/pi-sidepanel-outputs) | Modified files tracker — [W]rite/[E]dit tags, always-expanded tree |
+| [`pi-sidepanel-skills`](https://github.com/WernerVdM97/pi-sidepanel-skills) | Fetched skills — `/` explicit or `~` auto-loaded, with descriptions |
 
 ## Tab Previews
 
