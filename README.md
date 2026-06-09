@@ -1,5 +1,7 @@
 # pi-sidepanel
 
+> 🤖 This code is an AI-generated proof-of-concept. Use at your own risk.
+
 A decoupled, content-agnostic side-panel display engine for [pi](https://pi.dev). Provides a persistent right-side overlay with tabbed views driven by an event-hook system. Tab plugins are separate extensions that register against this framework — the framework itself contains zero content-specific knowledge.
 
 <p align="center"><em>Framework: tabs + layout + events. Content: you.</em></p>
