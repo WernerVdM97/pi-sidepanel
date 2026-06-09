@@ -113,6 +113,21 @@ class SidepanelComponent implements Component {
 
 	// ── public API for framework ──────────────────────────────────────
 
+	/** Sort tabs so dash is always first, rest maintain insertion order. */
+	private sortTabs(): void {
+		const activeId = this.tabs[this.activeIdx]?.provider.id;
+		this.tabs.sort((a, b) => {
+			if (a.provider.id === "dash") return -1;
+			if (b.provider.id === "dash") return 1;
+			return 0;
+		});
+		// Restore active tab position after sort
+		if (activeId) {
+			const newIdx = this.tabs.findIndex((t) => t.provider.id === activeId);
+			if (newIdx >= 0) this.activeIdx = newIdx;
+		}
+	}
+
 	addTab(tab: TabProvider): void {
 		// Deduplicate by id
 		const existing = this.tabs.findIndex((t) => t.provider.id === tab.id);
@@ -120,6 +135,7 @@ class SidepanelComponent implements Component {
 			this.tabs[existing] = { provider: tab };
 		} else {
 			this.tabs.push({ provider: tab });
+			this.sortTabs();
 			// Activate the first tab added
 			if (this.tabs.length === 1) {
 				this.activeIdx = 0;
@@ -527,6 +543,11 @@ export default function (pi: ExtensionAPI) {
 				tabs.push({ provider: p });
 			}
 		}
+		tabs.sort((a, b) => {
+			if (a.provider.id === "dash") return -1;
+			if (b.provider.id === "dash") return 1;
+			return 0;
+		});
 		pendingRegistrations = [];
 
 		ctx.ui
