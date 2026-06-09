@@ -450,21 +450,18 @@ class SidepanelComponent implements Component {
 		const th = this.theme;
 		const lines: string[] = [];
 
-		// Framework keys (always shown)
-		lines.push(
-			th.fg(
-				"dim",
-				truncateToWidth(" F2 toggle │ F3 focus │ Tab/1-9 switch │ Ctrl+C close", width, ""),
-			),
-		);
-
-		// Global pi keys (shown when panel is open)
-		lines.push(
-			th.fg(
-				"dim",
-				truncateToWidth("  ctrl+t think │ ctrl+p model │ ctrl+n session │ ctrl+o tools", width, ""),
-			),
-		);
+		if (this.tabs.length > 1) {
+			lines.push(
+				th.fg(
+					"dim",
+					truncateToWidth(" 1-9 switch │ F2 close │ F3 chat", width, ""),
+				),
+			);
+		} else {
+			lines.push(
+				th.fg("dim", truncateToWidth(" F2 close │ F3 chat", width, "")),
+			);
+		}
 
 		return lines;
 	}
