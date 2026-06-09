@@ -15,40 +15,6 @@ These are separate extensions that ship independently:
 | [`pi-sidepanel-outputs`](https://github.com/WernerVdM97/pi-sidepanel-outputs) | Modified files tracker — [W]rite/[E]dit tags, always-expanded tree |
 | [`pi-sidepanel-skills`](https://github.com/WernerVdM97/pi-sidepanel-skills) | Fetched skills — `/` explicit or `~` auto-loaded, with descriptions |
 
-## Tab Previews
-
-All four tabs are **interactive** — each responds to keyboard input for navigation, expansion, search, and scrolling.
-
-![Overview](preview-heading.png)
-
-<details>
-<summary>Inputs — File Explorer Tree</summary>
-
-![Inputs tab](preview-inputs.png)
-
-</details>
-
-<details>
-<summary>Bash — Command History</summary>
-
-![Bash tab](preview-bash.png)
-
-</details>
-
-<details>
-<summary>Skills — Fetched Skills</summary>
-
-![Skills tab](preview-skills.png)
-
-</details>
-
-<details>
-<summary>Outputs — Modified Files</summary>
-
-![Outputs tab](preview-outputs.png)
-
-</details>
-
 ## Installation
 
 ```bash
