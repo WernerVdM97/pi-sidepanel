@@ -77,6 +77,12 @@ class LazyTabPanel {
 		this.tabCaches.delete(this.activeIdx);
 	}
 
+	/** Invalidate a specific tab's cache by index — mirrors the framework's
+	 *  targeted invalidateTab(): drops ONLY that tab, leaving others cached. */
+	invalidateTab(idx: number): void {
+		this.tabCaches.delete(idx);
+	}
+
 	/** Invalidate all caches (theme change, resize). */
 	invalidateAll(): void {
 		this.tabCaches.clear();
@@ -252,5 +258,37 @@ describe("Render count efficiency", () => {
 		panel.invalidateActiveTab();
 		panel.renderContent(40);
 		assert.equal(tab.getRenderCount(), 2); // forced by invalidate
+	});
+
+	it("invalidating an inactive tab preserves the active tab's cache", () => {
+		// Regression guard: a targeted invalidate of tab B (while A is on
+		// screen) must NOT bust A's cache. Previously the framework called a
+		// blanket invalidate() after the targeted delete, clearing every tab.
+		const panel = new LazyTabPanel();
+		const tabA = makeTab("a", "A", () => ["A"]);
+		const tabB = makeTab("b", "B", () => ["B"]);
+		panel.addTab(tabA);
+		panel.addTab(tabB);
+
+		// Render A (active), then B, then back to A (served from cache).
+		panel.renderContent(40);
+		panel.switchTo(1);
+		panel.renderContent(40);
+		panel.switchTo(0);
+		panel.renderContent(40);
+		assert.equal(tabA.getRenderCount(), 1);
+		assert.equal(tabB.getRenderCount(), 1);
+
+		// Data changes on the INACTIVE tab B.
+		panel.invalidateTab(1);
+
+		// A is still on screen and stays cached — no repaint of A.
+		panel.renderContent(40);
+		assert.equal(tabA.getRenderCount(), 1);
+
+		// Switching to B re-renders it (only B's cache was dropped).
+		panel.switchTo(1);
+		panel.renderContent(40);
+		assert.equal(tabB.getRenderCount(), 2);
 	});
 });

@@ -84,18 +84,20 @@ class SidepanelComponent implements Component {
 	/** Whether the panel currently has input focus */
 	focused = true;
 
-	// keyboard state
-	private scrollOffset: number;
-
-	// cached render output
+	// cached render output (keyed by width AND content height so a vertical
+	// terminal resize busts the cache even when the width is unchanged)
 	private cachedWidth?: number;
+	private cachedHeight?: number;
 	private cachedLines?: string[];
 
 	/** Tabs currently loading (show fallback instead of calling render). */
 	private busyTabs = new Set<string>();
 
 	/** Per-tab stable render output. Keyed by tab id (not index — avoids stale cache on reorder). */
-	private tabCaches = new Map<string, { width: number; lines: string[] }>();
+	private tabCaches = new Map<
+		string,
+		{ width: number; height: number; lines: string[] }
+	>();
 
 	constructor(
 		tui: TUI,
@@ -111,7 +113,27 @@ class SidepanelComponent implements Component {
 		this.activeIdx = activeIdx;
 		this.done = done;
 		this.onUnfocus = onUnfocus;
-		this.scrollOffset = 0;
+	}
+
+	/** Active tab index — exposed so the entry point can persist the
+	 *  selection across panel close/reopen. */
+	getActiveIndex(): number {
+		return this.activeIdx;
+	}
+
+	/** Compute the content-area height from the live terminal size.
+	 *  The overlay is capped at 90% of terminal height; the framework draws
+	 *  6 chrome rows (top border, header, header separator, footer separator,
+	 *  one footer line, bottom border) around the content. Falls back to the
+	 *  historical fixed height when the terminal size is unavailable (e.g.
+	 *  under test or before the first real render). */
+	private contentHeight(): number {
+		const FALLBACK = 40;
+		const CHROME = 6;
+		const rows = this.tui?.terminal?.rows;
+		if (!rows || rows < 12) return FALLBACK;
+		const overlayRows = Math.floor(rows * 0.9);
+		return Math.max(8, Math.min(80, overlayRows - CHROME));
 	}
 
 	// ── public API for framework ──────────────────────────────────────
@@ -138,7 +160,13 @@ class SidepanelComponent implements Component {
 		} else {
 			this.busyTabs.delete(id);
 		}
-		this.invalidate();
+		// Drop this tab's cache + the panel-level cache so the loading
+		// placeholder (or, once cleared, the real content) repaints. Leave
+		// other tabs' caches intact.
+		this.tabCaches.delete(id);
+		this.cachedWidth = undefined;
+		this.cachedHeight = undefined;
+		this.cachedLines = undefined;
 		this.tui.requestRender();
 	}
 
@@ -176,16 +204,31 @@ class SidepanelComponent implements Component {
 
 	invalidateTab(tabId?: string): void {
 		if (tabId == null) {
-			// invalidate all
+			// Invalidate everything (e.g. theme change).
 			for (const t of this.tabs) t.provider.component.invalidate();
 			this.tabCaches.clear();
-		} else {
-			const tab = this.tabs.find((t) => t.provider.id === tabId);
-			tab?.provider.component.invalidate();
-			if (tab) this.tabCaches.delete(tab.provider.id);
+			this.cachedWidth = undefined;
+			this.cachedHeight = undefined;
+			this.cachedLines = undefined;
+			this.tui.requestRender();
+			return;
 		}
-		this.invalidate();
-		this.tui.requestRender();
+
+		// Targeted invalidation: drop ONLY this tab's caches so inactive tabs
+		// keep their cached render (the whole point of the per-tab cache).
+		const tab = this.tabs.find((t) => t.provider.id === tabId);
+		if (!tab) return;
+		tab.provider.component.invalidate();
+		this.tabCaches.delete(tab.provider.id);
+
+		// Re-render only when the affected tab is the one on screen — a
+		// background tab updating its data should not force a repaint.
+		if (this.tabs[this.activeIdx]?.provider.id === tabId) {
+			this.cachedWidth = undefined;
+			this.cachedHeight = undefined;
+			this.cachedLines = undefined;
+			this.tui.requestRender();
+		}
 	}
 
 	close(): void {
@@ -218,8 +261,14 @@ class SidepanelComponent implements Component {
 			return;
 		}
 
-		// 1-9: jump to tab by index
-		if (data.length === 1 && data >= "1" && data <= "9") {
+		// 1-9: jump to tab by index — unless the active tab is in a
+		// text-capture mode (e.g. Bash search), where digits are content.
+		// Tabs opt in via an optional capturesText(): boolean method.
+		const activeComp = this.activeTab()?.provider.component as
+			| { capturesText?: () => boolean }
+			| undefined;
+		const capturingText = activeComp?.capturesText?.() === true;
+		if (!capturingText && data.length === 1 && data >= "1" && data <= "9") {
 			const idx = Number.parseInt(data) - 1;
 			if (idx < this.tabs.length) {
 				this.switchToTab(idx);
@@ -258,7 +307,12 @@ class SidepanelComponent implements Component {
 	wantsKeyRelease = false;
 
 	render(width: number): string[] {
-		if (this.cachedLines && this.cachedWidth === width) {
+		const contentH = this.contentHeight();
+		if (
+			this.cachedLines &&
+			this.cachedWidth === width &&
+			this.cachedHeight === contentH
+		) {
 			return this.cachedLines;
 		}
 
@@ -293,8 +347,7 @@ class SidepanelComponent implements Component {
 			lines.push(B("├") + B("─".repeat(innerW)) + B("┤"));
 		}
 
-		// Content area
-		const contentH = 40;
+		// Content area (height computed from the live terminal above)
 		const active = this.activeTab();
 
 		if (active) {
@@ -316,25 +369,31 @@ class SidepanelComponent implements Component {
 					comp.setTheme(this.theme);
 				}
 
-				// Use cached render if available (avoids re-render on tab switch)
+				// Use cached render if available (avoids re-render on tab switch).
+				// Cache key includes the content height so a vertical resize
+				// re-renders the tab at the new size.
 				const cached = this.tabCaches.get(active.provider.id);
 				let clean: string[];
-				if (cached && cached.width === innerW) {
+				if (cached && cached.width === innerW && cached.height === contentH) {
 					clean = cached.lines;
 				} else {
-					const raw = active.provider.component.render(innerW);
+					// Pass the available content height as an optional 2nd arg.
+					// Tabs that accept it size their viewport/footer to fit;
+					// older tabs ignore it and fall back to their internal height.
+					const raw = comp.render(innerW, contentH);
 					tabLines = Array.isArray(raw)
-						? raw.filter((l): l is string => typeof l === "string")
+						? raw.filter((l: unknown): l is string => typeof l === "string")
 						: [];
 					clean = tabLines.map((l) => sanitizeLine(l));
-					this.tabCaches.set(active.provider.id, { width: innerW, lines: clean });
+					this.tabCaches.set(active.provider.id, {
+						width: innerW,
+						height: contentH,
+						lines: clean,
+					});
 				}
 
 				// Clamp to viewport
-				const visible = clean.slice(
-					this.scrollOffset,
-					this.scrollOffset + contentH,
-				);
+				const visible = clean.slice(0, contentH);
 
 				for (const line of visible) {
 					let truncated = truncateToWidth(line, innerW, "");
@@ -396,12 +455,14 @@ class SidepanelComponent implements Component {
 		lines.push(B(`╰${"─".repeat(innerW)}╯`));
 
 		this.cachedWidth = width;
+		this.cachedHeight = contentH;
 		this.cachedLines = lines;
 		return lines;
 	}
 
 	invalidate(): void {
 		this.cachedWidth = undefined;
+		this.cachedHeight = undefined;
 		this.cachedLines = undefined;
 		this.tabCaches.clear();
 		// Invalidate all tab components so they pick up theme + data changes
@@ -418,9 +479,9 @@ class SidepanelComponent implements Component {
 		this.deactivateTab();
 		this.activeIdx = idx;
 		this.activateTab();
-		this.scrollOffset = 0;
 		// Clear panel-level cache (header/tab-bar changes) but keep tab content caches
 		this.cachedWidth = undefined;
+		this.cachedHeight = undefined;
 		this.cachedLines = undefined;
 		this.tui.requestRender();
 	}
@@ -523,6 +584,9 @@ export default function (pi: ExtensionAPI) {
 	let panelComponent: SidepanelComponent | null = null;
 	let overlayHandle: any = null;
 	let pendingRegistrations: TabProvider[] = [];
+	/** Tabs currently flagged busy (e.g. replaying). Buffered here so the
+	 *  state survives until the panel opens, then applied to the component. */
+	const busyState = new Set<string>();
 	/** Latest ctx for widget updates from panel callbacks. */
 	const _panelCtx = { current: null as any };
 
@@ -628,6 +692,8 @@ export default function (pi: ExtensionAPI) {
 				},
 			)
 			.then(() => {
+				// Preserve the active-tab selection across close → reopen.
+				activeTabIndex = panelComponent?.getActiveIndex() ?? activeTabIndex;
 				isOpen = false;
 				panelComponent = null;
 				overlayHandle = null;
@@ -635,6 +701,14 @@ export default function (pi: ExtensionAPI) {
 
 		isOpen = true;
 		setFocusWidget();
+
+		// Apply any busy flags that were set while the panel was closed, so a
+		// tab still replaying shows the loading placeholder right away.
+		if (panelComponent) {
+			for (const id of busyState) {
+				(panelComponent as SidepanelComponent).setTabBusy(id, true);
+			}
+		}
 	}
 
 	function maybeAutoOpen(
@@ -705,6 +779,7 @@ export default function (pi: ExtensionAPI) {
 		hasOpenedThisSession = false;
 		tabs.length = 0;
 		pendingRegistrations = [];
+		busyState.clear();
 		activeTabIndex = 0;
 		if (panelComponent) {
 			panelComponent.close();
@@ -739,19 +814,21 @@ export default function (pi: ExtensionAPI) {
 	});
 
 	pi.events.on("sidepanel:unregister", ({ id }: { id: string }) => {
-		// Remove from module-level tabs list
-		const idx = tabs.findIndex((t) => t.provider.id === id);
-		if (idx >= 0) tabs.splice(idx, 1);
-		if (activeTabIndex >= tabs.length) {
-			activeTabIndex = Math.max(0, tabs.length - 1);
-		}
-
-		// Remove from pending
+		// Always drop from the pending buffer.
 		const pendingIdx = pendingRegistrations.findIndex((p) => p.id === id);
 		if (pendingIdx >= 0) pendingRegistrations.splice(pendingIdx, 1);
 
 		if (panelComponent) {
+			// Panel open: the component owns the (shared) tabs array and the
+			// active-index fixup — single source of truth, no double splice.
 			panelComponent.removeTab(id);
+		} else {
+			// Panel closed: mutate the module-level array directly.
+			const idx = tabs.findIndex((t) => t.provider.id === id);
+			if (idx >= 0) tabs.splice(idx, 1);
+			if (activeTabIndex >= tabs.length) {
+				activeTabIndex = Math.max(0, tabs.length - 1);
+			}
 		}
 	});
 
@@ -760,6 +837,21 @@ export default function (pi: ExtensionAPI) {
 			panelComponent.invalidateTab(tabId);
 		}
 	});
+
+	// Tabs flag themselves busy around slow async work (e.g. session replay)
+	// so the framework shows a loading placeholder instead of a frozen view.
+	pi.events.on(
+		"sidepanel:busy",
+		({ tabId, busy }: { tabId?: string; busy?: boolean }) => {
+			if (!tabId) return;
+			if (busy) {
+				busyState.add(tabId);
+			} else {
+				busyState.delete(tabId);
+			}
+			panelComponent?.setTabBusy(tabId, busy === true);
+		},
+	);
 
 	// Emit ready from session_start so tab plugins can register
 	// after both extensions have loaded (avoids load-order issues)

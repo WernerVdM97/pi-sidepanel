@@ -314,3 +314,52 @@ describe("Registration ordering", () => {
 		assert.equal(reg.getAll()[1]!.provider.label, "B updated");
 	});
 });
+
+// ── Content height (mirrors SidepanelComponent.contentHeight) ─────────────
+
+/**
+ * Pure mirror of the framework's content-height formula. The panel fills 90%
+ * of the terminal height, minus 6 chrome rows (borders + header + separators
+ * + footer). Falls back to a fixed 40 when the terminal size is unavailable
+ * (rows undefined or absurdly small).
+ */
+function contentHeight(rows: number | undefined): number {
+	const FALLBACK = 40;
+	const CHROME = 6;
+	if (!rows || rows < 12) return FALLBACK;
+	const overlayRows = Math.floor(rows * 0.9);
+	return Math.max(8, Math.min(80, overlayRows - CHROME));
+}
+
+describe("contentHeight", () => {
+	it("falls back to 40 when terminal size is unknown", () => {
+		assert.equal(contentHeight(undefined), 40);
+		assert.equal(contentHeight(0), 40);
+	});
+
+	it("falls back to 40 on absurdly small terminals", () => {
+		assert.equal(contentHeight(8), 40);
+	});
+
+	it("fills 90% of the terminal minus chrome", () => {
+		// 50 rows → floor(45) - 6 = 39
+		assert.equal(contentHeight(50), 39);
+		// 100 rows → floor(90) - 6 = 80 (hits the upper clamp)
+		assert.equal(contentHeight(100), 80);
+	});
+
+	it("clamps to a sane minimum and maximum", () => {
+		assert.ok(contentHeight(14) >= 8);
+		assert.ok(contentHeight(500) <= 80);
+	});
+
+	it("never lets the panel exceed the terminal height", () => {
+		for (const rows of [20, 24, 30, 40, 50, 60]) {
+			const panelRows = contentHeight(rows) + 6; // + chrome
+			assert.ok(
+				panelRows <= rows,
+				`panel ${panelRows} rows must fit terminal ${rows}`,
+			);
+		}
+	});
+});
