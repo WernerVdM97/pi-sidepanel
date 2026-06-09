@@ -91,8 +91,11 @@ class SidepanelComponent implements Component {
 	private cachedWidth?: number;
 	private cachedLines?: string[];
 
-	/** Per-tab stable render output. Keyed by tab index. */
-	private tabCaches = new Map<number, { width: number; lines: string[] }>();
+	/** Tabs currently loading (show fallback instead of calling render). */
+	private busyTabs = new Set<string>();
+
+	/** Per-tab stable render output. Keyed by tab id (not index — avoids stale cache on reorder). */
+	private tabCaches = new Map<string, { width: number; lines: string[] }>();
 
 	constructor(
 		tui: TUI,
@@ -126,6 +129,17 @@ class SidepanelComponent implements Component {
 			const newIdx = this.tabs.findIndex((t) => t.provider.id === activeId);
 			if (newIdx >= 0) this.activeIdx = newIdx;
 		}
+	}
+
+	/** Mark a tab as busy (loading) or ready. While busy, a placeholder is shown. */
+	setTabBusy(id: string, busy: boolean): void {
+		if (busy) {
+			this.busyTabs.add(id);
+		} else {
+			this.busyTabs.delete(id);
+		}
+		this.invalidate();
+		this.tui.requestRender();
 	}
 
 	addTab(tab: TabProvider): void {
@@ -168,9 +182,7 @@ class SidepanelComponent implements Component {
 		} else {
 			const tab = this.tabs.find((t) => t.provider.id === tabId);
 			tab?.provider.component.invalidate();
-			// Clear cache for the matching tab index
-			const idx = this.tabs.findIndex((t) => t.provider.id === tabId);
-			if (idx >= 0) this.tabCaches.delete(idx);
+			if (tab) this.tabCaches.delete(tab.provider.id);
 		}
 		this.invalidate();
 		this.tui.requestRender();
@@ -286,16 +298,26 @@ class SidepanelComponent implements Component {
 		const active = this.activeTab();
 
 		if (active) {
-			// ── Lazy tab rendering (per-tab cache) ────────────
-			let tabLines: string[] = [];
-			try {
+			// ── Busy guard: show loading placeholder while tab is initializing ──
+			if (this.busyTabs.has(active.provider.id)) {
+				const loading = this.padCenter(" Loading… ", innerW);
+				lines.push(B("│") + this.theme.fg("dim", loading) + B("│"));
+				const hint = this.padCenter(" replaying session… ", innerW);
+				lines.push(B("│") + this.theme.fg("dim", hint) + B("│"));
+				for (let i = 2; i < contentH; i++) {
+					lines.push(B("│") + " ".repeat(innerW) + B("│"));
+				}
+			} else {
+				// ── Lazy tab rendering (per-tab cache) ────────────
+				let tabLines: string[] = [];
+				try {
 				const comp = active.provider.component as any;
 				if (typeof comp.setTheme === "function") {
 					comp.setTheme(this.theme);
 				}
 
 				// Use cached render if available (avoids re-render on tab switch)
-				const cached = this.tabCaches.get(this.activeIdx);
+				const cached = this.tabCaches.get(active.provider.id);
 				let clean: string[];
 				if (cached && cached.width === innerW) {
 					clean = cached.lines;
@@ -305,7 +327,7 @@ class SidepanelComponent implements Component {
 						? raw.filter((l): l is string => typeof l === "string")
 						: [];
 					clean = tabLines.map((l) => sanitizeLine(l));
-					this.tabCaches.set(this.activeIdx, { width: innerW, lines: clean });
+					this.tabCaches.set(active.provider.id, { width: innerW, lines: clean });
 				}
 
 				// Clamp to viewport
@@ -315,8 +337,21 @@ class SidepanelComponent implements Component {
 				);
 
 				for (const line of visible) {
-					const truncated = truncateToWidth(line, innerW, "");
-					const vw = visibleWidth(truncated);
+					let truncated = truncateToWidth(line, innerW, "");
+					// Safety: if truncateToWidth still overflows (e.g. due to
+					// width disagreement on ambiguous characters), hard-clamp
+					// by stripping ANSI and raw-truncating to innerW.
+					let vw = visibleWidth(truncated);
+					if (vw > innerW) {
+						truncated = truncated.replace(
+							/\x1b\[[0-?]*[ -/]*[@-~]/g,
+							"",
+						);
+						while (truncated.length > 0 && visibleWidth(truncated) > innerW) {
+							truncated = truncated.slice(0, -1);
+						}
+						vw = visibleWidth(truncated);
+					}
 					const padding = " ".repeat(Math.max(0, innerW - vw));
 					lines.push(B("│") + truncated + padding + B("│"));
 				}
@@ -336,6 +371,7 @@ class SidepanelComponent implements Component {
 				for (let i = 1; i < contentH; i++) {
 					lines.push(B("│") + " ".repeat(innerW) + B("│"));
 				}
+			}
 			}
 		} else {
 			lines.push(
