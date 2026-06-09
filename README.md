@@ -4,6 +4,15 @@ A decoupled, content-agnostic side-panel display engine for [pi](https://pi.dev)
 
 <p align="center"><em>Framework: tabs + layout + events. Content: you.</em></p>
 
+## Bundled Tab Plugins
+
+These are separate extensions that ship independently:
+
+| Plugin | Description |
+|--------|-------------|
+| [`pi-sidepanel-bash`](../pi-sidepanel-bash) | Bash command history — vim-style cursor, search, output viewer, theme colors |
+| [`pi-sidepanel-files`](../pi-sidepanel-files) | Files modified by the agent (write/edit) |
+
 ## Installation
 
 ```bash
@@ -29,8 +38,8 @@ The panel auto-opens on the first tool call or agent event in each session.
 | Key | Context | Action |
 |-----|---------|--------|
 | **F2** | Anywhere | Toggle panel open/close |
-| **F3** | Panel focused | Unfocus (return to chat, panel stays visible) |
-| **F3** | Panel visible, unfocused | Re-focus panel |
+| **F3** | Panel focused | Unfocus (return to chat, panel stays visible, chat undimmed) |
+| **F3** | Panel visible, unfocused | Re-focus panel, chat dimmed |
 | **Tab** | Panel focused | Next tab |
 | **Shift+Tab** | Panel focused | Previous tab |
 | **1-9** | Panel focused | Jump to tab by number |
@@ -43,7 +52,7 @@ Content-specific keys (arrows, Enter, search, etc.) are delegated to the active 
 
 ## Focus indication
 
-When the panel has input focus, borders render in **bold**. When unfocused (F3), borders switch to **dimmed** text — a visible distinction that works in every terminal regardless of color scheme.
+When the panel has input focus, borders render in **bold** and the **chat area is dimmed** behind the panel. When unfocused (F3), borders switch to **dimmed** text and the chat returns to full brightness — a visible distinction that works in every terminal regardless of color scheme.
 
 ## Plugin API
 
@@ -177,38 +186,6 @@ export default function (pi: ExtensionAPI) {
   });
 }
 ```
-
-## Bundled Tab Plugins
-
-These are separate extensions that ship independently:
-
-| Plugin | Description |
-|--------|-------------|
-| [`pi-sidepanel-bash`](../pi-sidepanel-bash) | Bash command history — vim-style cursor, search, output viewer, theme colors |
-| [`pi-sidepanel-files`](../pi-sidepanel-files) | Files modified by the agent (write/edit) |
-
-## Architecture
-
-```
-pi-sidepanel (framework)
-  ├── overlay management (open/close/focus)
-  ├── tab bar + content area rendering
-  ├── keyboard input routing
-  ├── defensive line sanitization
-  └── pi.events registration API
-
-pi-sidepanel-bash (tab plugin)
-  ├── subscribes to pi tool_call/tool_result events
-  ├── buffers bash commands with exit codes and output
-  └── registers via sidepanel:register
-
-pi-sidepanel-files (tab plugin)
-  ├── subscribes to pi tool_call events
-  ├── tracks write/edit file paths
-  └── registers via sidepanel:register
-```
-
-The framework has zero knowledge of bash, files, or any content domain. Tab plugins have zero knowledge of overlay positioning, tab switching, or focus management.
 
 ## License
 

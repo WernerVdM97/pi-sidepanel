@@ -91,6 +91,9 @@ class SidepanelComponent implements Component {
 	private cachedWidth?: number;
 	private cachedLines?: string[];
 
+	/** Per-tab stable render output. Keyed by tab index. */
+	private tabCaches = new Map<number, { width: number; lines: string[] }>();
+
 	constructor(
 		tui: TUI,
 		theme: Theme,
@@ -145,9 +148,13 @@ class SidepanelComponent implements Component {
 		if (tabId == null) {
 			// invalidate all
 			for (const t of this.tabs) t.provider.component.invalidate();
+			this.tabCaches.clear();
 		} else {
 			const tab = this.tabs.find((t) => t.provider.id === tabId);
 			tab?.provider.component.invalidate();
+			// Clear cache for the matching tab index
+			const idx = this.tabs.findIndex((t) => t.provider.id === tabId);
+			if (idx >= 0) this.tabCaches.delete(idx);
 		}
 		this.invalidate();
 		this.tui.requestRender();
@@ -244,7 +251,7 @@ class SidepanelComponent implements Component {
 			lines.push(B("│") + this.renderTabBar(innerW) + B("│"));
 			lines.push(B("├") + B("─".repeat(innerW)) + B("┤"));
 		} else if (this.tabs.length === 1) {
-			const header = ` ${this.tabs[0]!.provider.label} `;
+			const header = ` 1:${this.tabs[0]!.provider.label} `;
 			const padded = this.padCenter(header, innerW);
 			lines.push(B("│") + th.fg("accent", padded) + B("│"));
 			lines.push(B("├") + B("─".repeat(innerW)) + B("┤"));
@@ -263,20 +270,27 @@ class SidepanelComponent implements Component {
 		const active = this.activeTab();
 
 		if (active) {
-			// ── Defensive tab rendering ──────────────────────────
+			// ── Lazy tab rendering (per-tab cache) ────────────
 			let tabLines: string[] = [];
 			try {
 				const comp = active.provider.component as any;
 				if (typeof comp.setTheme === "function") {
 					comp.setTheme(this.theme);
 				}
-				const raw = active.provider.component.render(innerW);
-				if (Array.isArray(raw)) {
-					tabLines = raw.filter((l): l is string => typeof l === "string");
-				}
 
-				// Sanitize every line
-				const clean = tabLines.map((l) => sanitizeLine(l));
+				// Use cached render if available (avoids re-render on tab switch)
+				const cached = this.tabCaches.get(this.activeIdx);
+				let clean: string[];
+				if (cached && cached.width === innerW) {
+					clean = cached.lines;
+				} else {
+					const raw = active.provider.component.render(innerW);
+					tabLines = Array.isArray(raw)
+						? raw.filter((l): l is string => typeof l === "string")
+						: [];
+					clean = tabLines.map((l) => sanitizeLine(l));
+					this.tabCaches.set(this.activeIdx, { width: innerW, lines: clean });
+				}
 
 				// Clamp to viewport
 				const visible = clean.slice(
@@ -337,6 +351,7 @@ class SidepanelComponent implements Component {
 	invalidate(): void {
 		this.cachedWidth = undefined;
 		this.cachedLines = undefined;
+		this.tabCaches.clear();
 		// Invalidate all tab components so they pick up theme + data changes
 		for (const t of this.tabs) {
 			t.provider.component.invalidate();
@@ -347,11 +362,14 @@ class SidepanelComponent implements Component {
 
 	private switchToTab(idx: number): void {
 		if (this.tabs.length === 0) return;
+		if (idx === this.activeIdx) return;
 		this.deactivateTab();
 		this.activeIdx = idx;
 		this.activateTab();
 		this.scrollOffset = 0;
-		this.invalidate();
+		// Clear panel-level cache (header/tab-bar changes) but keep tab content caches
+		this.cachedWidth = undefined;
+		this.cachedLines = undefined;
 		this.tui.requestRender();
 	}
 
@@ -397,8 +415,8 @@ class SidepanelComponent implements Component {
 			const isLast = i === segments.length - 1;
 			const alloc = isLast ? available - i * perTab : perTab;
 			let label = seg.active
-				? th.fg("accent", th.bold(seg.label))
-				: th.fg("muted", seg.label);
+				? th.fg("accent", th.bold(`${i + 1}:${seg.label}`))
+				: th.fg("muted", `${i + 1}:${seg.label}`);
 
 			if (visibleWidth(label) > alloc) {
 				label = truncateToWidth(label, alloc, "…", false);
@@ -420,7 +438,7 @@ class SidepanelComponent implements Component {
 			lines.push(
 				th.fg(
 					"dim",
-					truncateToWidth(" Tab/1-9 switch │ F2 close │ F3 chat", width, ""),
+					truncateToWidth(" 1-9 switch │ F2 close │ F3 chat", width, ""),
 				),
 			);
 		} else {
@@ -453,6 +471,32 @@ export default function (pi: ExtensionAPI) {
 	let panelComponent: SidepanelComponent | null = null;
 	let overlayHandle: any = null;
 	let pendingRegistrations: TabProvider[] = [];
+	/** Latest ctx for widget updates from panel callbacks. */
+	const _panelCtx = { current: null as any };
+
+	// ── Widget helpers ────────────────────────────────────────────────
+
+	function setFocusWidget(): void {
+		if (!_panelCtx.current?.ui?.setWidget) return;
+		_panelCtx.current.ui.setWidget(
+			"sidepanel-focus",
+			(_tui: any, theme: any) => ({
+				render: () => [
+					theme.fg("dim", theme.bold("═".repeat(40))),
+					theme.fg(
+						"dim",
+						"  ⬤ Sidepanel active  —  Esc / F3 to return to chat",
+					),
+				],
+				invalidate: () => {},
+			}),
+		);
+	}
+
+	function clearFocusWidget(): void {
+		if (!_panelCtx.current?.ui?.setWidget) return;
+		_panelCtx.current.ui.setWidget("sidepanel-focus", undefined);
+	}
 
 	// ── Helpers ────────────────────────────────────────────────────────
 
@@ -470,6 +514,8 @@ export default function (pi: ExtensionAPI) {
 		};
 	}): void {
 		if (isOpen) return;
+
+		_panelCtx.current = ctx;
 
 		// Flush pending registrations — only path that mutates tabs when
 		// the panel is closed (inline handler skips direct mutation).
@@ -493,14 +539,12 @@ export default function (pi: ExtensionAPI) {
 						activeTabIndex,
 						// done callback: panel dismissed — signal the overlay
 						() => {
+							clearFocusWidget();
 							done();
 						},
 						// onUnfocus: F3 pressed in panel.
-						// Set muted state + invalidate, then request a render.
-						// Defer unfocus by one tick so the TUI has a chance
-						// to render the muted borders before input routing
-						// moves away from the overlay.
 						() => {
+							clearFocusWidget();
 							if (panelComponent) {
 								panelComponent.focused = false;
 								panelComponent.invalidate();
@@ -533,6 +577,7 @@ export default function (pi: ExtensionAPI) {
 			});
 
 		isOpen = true;
+		setFocusWidget();
 	}
 
 	function maybeAutoOpen(
@@ -559,14 +604,17 @@ export default function (pi: ExtensionAPI) {
 
 	pi.registerShortcut("f3", {
 		description: "Re-focus side panel from chat",
-		handler: async () => {
+		handler: async (ctx: any) => {
 			if (isOpen && overlayHandle && !panelComponent?.focused) {
+				_panelCtx.current = ctx;
 				overlayHandle.focus?.();
 				if (panelComponent) {
 					panelComponent.focused = true;
 					panelComponent.invalidate();
 					panelComponent.requestRender();
 				}
+				// Re-focus panel, restore focus indicator
+				setFocusWidget();
 			}
 		},
 	});
