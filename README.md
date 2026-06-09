@@ -11,7 +11,45 @@ These are separate extensions that ship independently:
 | Plugin | Description |
 |--------|-------------|
 | [`pi-sidepanel-bash`](../pi-sidepanel-bash) | Bash command history — vim-style cursor, search, output viewer, theme colors |
-| [`pi-sidepanel-files`](../pi-sidepanel-files) | Files modified by the agent (write/edit) |
+| [`pi-sidepanel-inputs`](../pi-sidepanel-inputs) | File explorer tree — interactive, collapsible, color-coded by read status |
+| [`pi-sidepanel-outputs`](../pi-sidepanel-outputs) | Modified files tracker — [W]rite/[E]dit tags, always-expanded tree |
+| [`pi-sidepanel-skills`](../pi-sidepanel-skills) | Fetched skills — `/` explicit or `~` auto-loaded, with descriptions |
+
+## Tab Previews
+
+All four tabs are **interactive** — each responds to keyboard input for navigation, expansion, search, and scrolling.
+
+![Overview](preview-heading.png)
+
+<details>
+<summary>Inputs — File Explorer Tree</summary>
+
+![Inputs tab](preview-inputs.png)
+
+</details>
+
+<details>
+<summary>Bash — Command History</summary>
+
+![Bash tab](preview-bash.png)
+
+</details>
+
+<details>
+<summary>Skills — Fetched Skills</summary>
+
+![Skills tab](preview-skills.png)
+
+</details>
+
+<details>
+<summary>Outputs — Modified Files</summary>
+
+![Outputs tab](preview-outputs.png)
+
+</details>
+
+Also available as an [interactive HTML preview](pi-sidepanel-tabs-preview.html) with full Catppuccin theme styling.
 
 ## Installation
 
