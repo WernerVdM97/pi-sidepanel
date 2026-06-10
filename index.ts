@@ -10,6 +10,7 @@
  *   pi.events.emit("sidepanel:register", { id, label, component })
  *   pi.events.emit("sidepanel:unregister", { id })
  *   pi.events.emit("sidepanel:invalidate", { tabId? })
+ *   pi.events.emit("sidepanel:busy", { tabId, busy, message? })
  *
  * Commands:
  *   /sidepanel         — toggle panel visibility
@@ -32,28 +33,11 @@ import {
 
 // ── Defensive line sanitizer ────────────────────────────────────────────
 
-/**
- * Strip dangerous terminal control sequences while preserving SGR color
- * codes. Inlined to avoid local .ts import (pi's extension loader may not
- * resolve transitive .ts modules).
- */
-function sanitizeLine(line: string): string {
-	line = line.replace(/\r\n?|\n/g, "");
-	line = line.replace(/\x1b\[[?=]?[\d;]*[A-Za-ln-z~]/g, "");
-	line = line.replace(/\x1bc/g, "");
-	line = line.replace(/\x1b\].*?(?:\x07|\x1b\\)/g, "");
-	line = line.replace(/\x1b[()*+][A-Za-z0-9]/g, "");
-	line = line.replace(/[\x0e\x0f]/g, "");
-	for (let i = 0; i < line.length && line.includes("\x08"); i++) {
-		const prev = line;
-		line = line.replace(/.\x08/g, "");
-		if (line === prev) {
-			line = line.replace(/\x08/g, "");
-			break;
-		}
-	}
-	return line;
-}
+// Single source of truth lives in sanitize.ts (where the tests point).
+// Relative .ts imports resolve fine in pi's extension loader — the bash
+// tab plugin already imports ./log.ts the same way.
+import { sanitizeLine } from "./sanitize.ts";
+export { sanitizeLine };
 
 // ── Interfaces ────────────────────────────────────────────────────────────
 
@@ -90,8 +74,9 @@ class SidepanelComponent implements Component {
 	private cachedHeight?: number;
 	private cachedLines?: string[];
 
-	/** Tabs currently loading (show fallback instead of calling render). */
-	private busyTabs = new Set<string>();
+	/** Tabs currently loading (show fallback instead of calling render).
+	 *  Value is an optional tab-supplied status message. */
+	private busyTabs = new Map<string, string | undefined>();
 
 	/** Per-tab stable render output. Keyed by tab id (not index — avoids stale cache on reorder). */
 	private tabCaches = new Map<
@@ -154,9 +139,9 @@ class SidepanelComponent implements Component {
 	}
 
 	/** Mark a tab as busy (loading) or ready. While busy, a placeholder is shown. */
-	setTabBusy(id: string, busy: boolean): void {
+	setTabBusy(id: string, busy: boolean, message?: string): void {
 		if (busy) {
-			this.busyTabs.add(id);
+			this.busyTabs.set(id, message);
 		} else {
 			this.busyTabs.delete(id);
 		}
@@ -194,6 +179,11 @@ class SidepanelComponent implements Component {
 		const wasActive = idx === this.activeIdx;
 		if (wasActive) this.deactivateTab();
 		this.tabs.splice(idx, 1);
+		this.tabCaches.delete(id);
+		this.busyTabs.delete(id);
+		// Removing a tab before the active one shifts indices left — follow
+		// the active tab so the selection doesn't silently jump.
+		if (idx < this.activeIdx) this.activeIdx--;
 		if (this.activeIdx >= this.tabs.length) {
 			this.activeIdx = Math.max(0, this.tabs.length - 1);
 		}
@@ -272,8 +262,10 @@ class SidepanelComponent implements Component {
 			const idx = Number.parseInt(data) - 1;
 			if (idx < this.tabs.length) {
 				this.switchToTab(idx);
+				return;
 			}
-			return;
+			// Digit with no matching tab: fall through so the active tab
+			// can consume it instead of the key being swallowed.
 		}
 
 		// F3: unfocus (return to chat, panel stays visible)
@@ -298,9 +290,9 @@ class SidepanelComponent implements Component {
 		const active = this.activeTab();
 		if (active?.provider.component.handleInput) {
 			active.provider.component.handleInput(data);
-			// tab likely changed its state — invalidate and re-render
-			this.invalidate();
-			this.tui.requestRender();
+			// Tab likely changed its state — invalidate ONLY this tab
+			// (a blanket invalidate would bust every tab's cache per keypress).
+			this.invalidateTab(active.provider.id);
 		}
 	}
 
@@ -355,9 +347,14 @@ class SidepanelComponent implements Component {
 			if (this.busyTabs.has(active.provider.id)) {
 				const loading = this.padCenter(" Loading… ", innerW);
 				lines.push(B("│") + this.theme.fg("dim", loading) + B("│"));
-				const hint = this.padCenter(" replaying session… ", innerW);
-				lines.push(B("│") + this.theme.fg("dim", hint) + B("│"));
-				for (let i = 2; i < contentH; i++) {
+				let used = 1;
+				const message = this.busyTabs.get(active.provider.id);
+				if (message) {
+					const hint = this.padCenter(` ${message} `, innerW);
+					lines.push(B("│") + this.theme.fg("dim", hint) + B("│"));
+					used = 2;
+				}
+				for (let i = used; i < contentH; i++) {
 					lines.push(B("│") + " ".repeat(innerW) + B("│"));
 				}
 			} else {
@@ -584,9 +581,10 @@ export default function (pi: ExtensionAPI) {
 	let panelComponent: SidepanelComponent | null = null;
 	let overlayHandle: any = null;
 	let pendingRegistrations: TabProvider[] = [];
-	/** Tabs currently flagged busy (e.g. replaying). Buffered here so the
-	 *  state survives until the panel opens, then applied to the component. */
-	const busyState = new Set<string>();
+	/** Tabs currently flagged busy (e.g. replaying), with an optional status
+	 *  message. Buffered here so the state survives until the panel opens,
+	 *  then applied to the component. */
+	const busyState = new Map<string, string | undefined>();
 	/** Latest ctx for widget updates from panel callbacks. */
 	const _panelCtx = { current: null as any };
 
@@ -674,6 +672,13 @@ export default function (pi: ExtensionAPI) {
 							setTimeout(() => overlayHandle?.unfocus?.(), 0);
 						},
 					);
+					// Apply busy flags buffered while the panel was closed, so a
+					// tab still replaying shows the loading placeholder right away.
+					// Done here (not after ui.custom() returns) because this
+					// factory may be invoked asynchronously.
+					for (const [id, message] of busyState) {
+						panelComponent.setTabBusy(id, true, message);
+					}
 					return panelComponent;
 				},
 				{
@@ -701,14 +706,6 @@ export default function (pi: ExtensionAPI) {
 
 		isOpen = true;
 		setFocusWidget();
-
-		// Apply any busy flags that were set while the panel was closed, so a
-		// tab still replaying shows the loading placeholder right away.
-		if (panelComponent) {
-			for (const id of busyState) {
-				(panelComponent as SidepanelComponent).setTabBusy(id, true);
-			}
-		}
 	}
 
 	function maybeAutoOpen(
@@ -814,9 +811,10 @@ export default function (pi: ExtensionAPI) {
 	});
 
 	pi.events.on("sidepanel:unregister", ({ id }: { id: string }) => {
-		// Always drop from the pending buffer.
+		// Always drop from the pending buffer and the busy buffer.
 		const pendingIdx = pendingRegistrations.findIndex((p) => p.id === id);
 		if (pendingIdx >= 0) pendingRegistrations.splice(pendingIdx, 1);
+		busyState.delete(id);
 
 		if (panelComponent) {
 			// Panel open: the component owns the (shared) tabs array and the
@@ -825,7 +823,11 @@ export default function (pi: ExtensionAPI) {
 		} else {
 			// Panel closed: mutate the module-level array directly.
 			const idx = tabs.findIndex((t) => t.provider.id === id);
-			if (idx >= 0) tabs.splice(idx, 1);
+			if (idx >= 0) {
+				tabs.splice(idx, 1);
+				// Keep the saved selection pointing at the same tab.
+				if (idx < activeTabIndex) activeTabIndex--;
+			}
 			if (activeTabIndex >= tabs.length) {
 				activeTabIndex = Math.max(0, tabs.length - 1);
 			}
@@ -842,14 +844,22 @@ export default function (pi: ExtensionAPI) {
 	// so the framework shows a loading placeholder instead of a frozen view.
 	pi.events.on(
 		"sidepanel:busy",
-		({ tabId, busy }: { tabId?: string; busy?: boolean }) => {
+		({
+			tabId,
+			busy,
+			message,
+		}: {
+			tabId?: string;
+			busy?: boolean;
+			message?: string;
+		}) => {
 			if (!tabId) return;
 			if (busy) {
-				busyState.add(tabId);
+				busyState.set(tabId, message);
 			} else {
 				busyState.delete(tabId);
 			}
-			panelComponent?.setTabBusy(tabId, busy === true);
+			panelComponent?.setTabBusy(tabId, busy === true, message);
 		},
 	);
 

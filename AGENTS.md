@@ -21,7 +21,7 @@ Each tab plugin:
   1. Creates a component class/object implementing the Component interface
   2. Registers via pi.events.emit("sidepanel:register", { id, label, component })
   3. Wires pi.on("session_start") for session replay + registration
-  4. Wires pi.on("sidepanel:ready") as fallback registration
+  4. Wires pi.events.on("sidepanel:ready") as fallback re-registration
   5. Emits pi.events.emit("sidepanel:invalidate", { tabId }) on data changes
 ```
 
@@ -60,11 +60,17 @@ pi-sidepanel-{name}/           ← Git repo root
 ├── LICENSE                        ← MIT
 ├── README.md                      ← Purpose, keybindings, install, previews
 ├── package.json                   ← name, version, "pi-package" keyword, pi.extensions
-├── index.ts                       ← Extension entry point
-├── {domain}.ts                    ← Optional: extracted data model / logic
+├── index.ts                       ← Entry point: event wiring ONLY (thin)
+├── {domain}.ts                    ← Data model + rendering (no pi imports;
+│                                     pi-tui utilities injected by index.ts)
 └── test/
-    ├── {domain}.test.ts           ← Unit tests for component logic
-    └── {domain}-integration.test.ts ← Optional: integration tests
+    ├── _harness/                  ← Vendored test harness (see Testing)
+    │   ├── fake-pi.ts             ← FakePi: fake ExtensionAPI
+    │   ├── stub-hooks.mjs         ← module.register() resolve hook
+    │   ├── pi-tui-stub.mjs        ← stub matchesKey/truncate/visibleWidth
+    │   └── pi-coding-agent-stub.mjs
+    ├── {domain}.test.ts           ← Unit tests importing the REAL {domain}.ts
+    └── integration.test.ts        ← Tests importing the REAL index.ts via FakePi
 ```
 
 ### package.json schema
@@ -152,16 +158,24 @@ export default function (pi: ExtensionAPI) {
     registerTab();
   });
 
-  // Fallback: if session_start already fired before this extension loaded
+  // Fallback: the framework resets its registry on ITS session_start and
+  // emits "sidepanel:ready" afterwards. If this extension's session_start
+  // handler ran first (handler order follows extension load order), the
+  // registration above was wiped. Re-register UNCONDITIONALLY — do not
+  // guard on `registered` (it is already true at this point, so a guard
+  // would skip the recovery). Re-registration is idempotent: the
+  // framework dedups by id.
   pi.events.on("sidepanel:ready", () => {
-    if (!registered) registerTab();
+    registered = false;
+    registerTab();
   });
 }
 ```
 
 **Important**: Always register from `session_start` (with session replay first)
 so the tab persists across pi restarts. Always have the `sidepanel:ready`
-fallback for load-order issues.
+fallback for load-order issues, and make it re-register unconditionally — a
+`if (!registered)` guard does not survive the framework's registry wipe.
 
 ### Unregistration
 
@@ -177,6 +191,23 @@ pi.events.emit("sidepanel:invalidate", { tabId: "my-tab" });
 
 // All tabs (use sparingly):
 pi.events.emit("sidepanel:invalidate", {});
+```
+
+### Busy / loading state
+
+Around slow synchronous work (e.g. session replay), flag the tab busy so the
+framework shows a "Loading…" placeholder instead of a frozen view. The
+optional `message` is rendered under the placeholder. Busy state set while
+the panel is closed is buffered and applied when it opens.
+
+```typescript
+pi.events.emit("sidepanel:busy", {
+  tabId: "my-tab",
+  busy: true,
+  message: "replaying session…", // optional
+});
+// ... slow work ...
+pi.events.emit("sidepanel:busy", { tabId: "my-tab", busy: false });
 ```
 
 ### Event wiring pattern
@@ -322,10 +353,12 @@ display. This protects the panel's box shape against malformed output:
 - **SGR color codes** (`\x1b[…m`) → **preserved**
 
 Tab authors normally don't need to call this — the framework handles it.
-Import it only if you need pre-sanitization:
+If you need pre-sanitization, import it via a relative path (tab plugins are
+sibling packages; there is no npm-resolvable "pi-sidepanel" module) or vendor
+`sanitize.ts` — it's dependency-free:
 
 ```typescript
-import { sanitizeLine } from "pi-sidepanel";
+import { sanitizeLine } from "../pi-sidepanel/sanitize.ts";
 ```
 
 ### Truncation and padding
@@ -489,47 +522,75 @@ keybindings — delegate unsupported input to the framework by not consuming it.
 
 ## Testing
 
-### Unit tests (component logic)
+**Always test the real code. Never write "mirror" copies of production
+logic inside test files** — mirrors drift silently and pass while the real
+code is broken (this happened here: a registration bug, a node leak, and a
+render crash all lived behind green mirror suites). Two layers, both
+running under plain `node --test test/*.test.ts` with zero dependencies:
 
-Test data structures and pure logic without the framework:
+### Layer 1 — Unit tests import the real `{domain}.ts`
+
+The data model lives in `{domain}.ts` with **no pi imports**: the pi-tui
+utilities it needs are injected by `index.ts` (production) or by the
+vendored stub (tests):
 
 ```typescript
-// test/my-component.test.ts
-import { describe, it } from "node:test";
-import assert from "node:assert/strict";
+// test/{domain}.test.ts
+import { MyComponent } from "../{domain}.ts";
+import {
+  matchesKey,
+  truncateToWidth,
+  visibleWidth,
+} from "./_harness/pi-tui-stub.mjs";
 
-// Import only the data model, not the extension entry point
-// Use inline copies of pi-tui utilities to avoid module resolution
-function visibleWidth(str: string): number { /* ... */ }
-function truncateToWidth(str: string, width: number): string { /* ... */ }
-
-describe("MyComponent", () => {
-  it("starts with empty state", () => {
-    const comp = new MyComponent();
-    const lines = comp.render(40);
-    assert.ok(lines.length > 0);
-    assert.ok(lines[0]!.includes("No data yet"));
-  });
-
-  it("caches render output by width", () => {
-    // Verify cache hit
-  });
-
-  it("handles scroll input", () => {
-    // Verify handleInput changes scroll offset
-  });
-});
+const comp = new MyComponent({ matchesKey, truncateToWidth, visibleWidth });
 ```
 
-### Lazy render tests (caching)
+In `index.ts`, pass the real ones:
 
-Test the per-tab caching pattern (see `test/sidepanel-lazy.test.ts` for
-reference). Verify:
-- Same width → cached result, no re-render
-- Different width → re-renders
-- Switch tab and back → uses cache, no re-render
-- `invalidate()` → forces re-render
-- `invalidateAll()` (theme change) → forces re-render on all tabs
+```typescript
+import { matchesKey, truncateToWidth, visibleWidth } from "@earendil-works/pi-tui";
+const comp = new MyComponent({ matchesKey, truncateToWidth, visibleWidth });
+```
+
+### Layer 2 — Integration tests import the real `index.ts`
+
+`test/_harness/` (vendored; the canonical copy lives in
+`pi-sidepanel/test/_harness/` — keep copies in sync) provides:
+
+- **`stub-hooks.mjs`** — a `module.register()` resolve hook mapping
+  `@earendil-works/*` to local stubs, so the production entry point
+  imports cleanly outside pi. Registration must precede a **dynamic**
+  import of the extension (static imports resolve too early):
+
+  ```typescript
+  import { register } from "node:module";
+  register("./_harness/stub-hooks.mjs", import.meta.url);
+  const extension = (await import("../index.ts")).default;
+  ```
+
+- **`fake-pi.ts`** — `FakePi` (events bus, `on`/`fire`, command/shortcut
+  recording, `sendUserMessage` capture, tool listing) plus helpers:
+  `sessionCtx(entries)`, `captureRegistrations(pi)`, `captureBusy(pi)`,
+  `identityTheme`, `tick()`.
+
+Every tab plugin's integration suite must cover at least:
+
+1. **Registers on session_start** (with a session fixture).
+2. **Re-registers on `sidepanel:ready`** — fire `session_start`, then emit
+   `sidepanel:ready`, and assert a SECOND registration arrives. This is
+   the load-order regression test; an `if (!registered)` guard fails it.
+3. **Session replay** — fixture entries (`toolCall` / `toolResult`
+   messages) produce the expected render.
+4. **Live events** — `pi.fire("tool_call", …)` / `tool_result` update the
+   render; other tools are ignored.
+5. **Busy lifecycle** — `sidepanel:busy` true (with `message`) then false
+   around replay.
+
+The framework repo additionally drives the real `SidepanelComponent`
+through a fake `ctx.ui.custom` (see `pi-sidepanel/test/integration.test.ts`),
+covering tab switching, removal index fixups, per-tab cache behavior, busy
+buffering with a deferred factory, and box-shape geometry.
 
 ### Sanitization tests
 
@@ -638,17 +699,18 @@ while (this.nodeMap.size >= EXPLORER_MAX_NODES) {
 }
 ```
 
-### Use data model file for complex logic
+### Keep index.ts thin: data model lives in {domain}.ts
 
-When the component's data model grows large, extract it into a separate
-file for testability:
+The entry point holds event wiring and registration ONLY. All data model
+and rendering logic lives in a separate pi-free module (pi-tui utilities
+injected), so unit tests exercise the real class — see Testing:
 
 ```
 pi-sidepanel-bash/
 ├── index.ts            ← Event wiring + registration (thin)
 ├── log.ts              ← BashLog class: data model, rendering, search
 └── test/
-    └── log.test.ts     ← Tests for BashLog in isolation
+    └── bash.test.ts    ← Tests for BashLog in isolation
 ```
 
 ## Do not

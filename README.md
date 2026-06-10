@@ -83,7 +83,7 @@ Tab plugins register via pi's inter-extension event bus. A tab plugin supplies a
 ```typescript
 // In your tab extension (separate file/package):
 export default function (pi: ExtensionAPI) {
-  pi.on("session_start", () => {
+  function registerTab() {
     pi.events.emit("sidepanel:register", {
       id: "my-tab",          // unique identifier
       label: "My Tab",       // shown in tab bar
@@ -93,7 +93,15 @@ export default function (pi: ExtensionAPI) {
         invalidate(): void { ... },
       },
     });
-  });
+  }
+
+  pi.on("session_start", () => registerTab());
+
+  // REQUIRED fallback: the framework wipes its registry on its own
+  // session_start (handler order follows extension load order) and then
+  // emits "sidepanel:ready". Re-register unconditionally — registration
+  // is idempotent (the framework dedups by id).
+  pi.events.on("sidepanel:ready", () => registerTab());
 }
 ```
 
@@ -112,6 +120,22 @@ pi.events.emit("sidepanel:invalidate", { tabId: "my-tab" });
 // Omit tabId to invalidate all tabs:
 pi.events.emit("sidepanel:invalidate", {});
 ```
+
+### Busy / Loading State
+
+Around slow synchronous work (e.g. session replay), flag the tab busy so the framework shows a loading placeholder instead of a frozen view. The optional `message` is shown under "Loading…":
+
+```typescript
+pi.events.emit("sidepanel:busy", {
+  tabId: "my-tab",
+  busy: true,
+  message: "replaying session…", // optional
+});
+// ... slow work ...
+pi.events.emit("sidepanel:busy", { tabId: "my-tab", busy: false });
+```
+
+Busy state set while the panel is closed is buffered and applied when it opens.
 
 ### Theme Support
 
@@ -166,10 +190,10 @@ The framework **sanitizes every rendered line** from tab components before displ
 - **Backspace chains** are collapsed
 - **SGR color codes** (`\x1b[…m`) are **preserved** — colors from theme-aware tabs pass through
 
-The `sanitizeLine()` function is exported for tab plugin authors who want to pre-sanitize their own content:
+The `sanitizeLine()` function lives in `sanitize.ts` and is re-exported from the extension entry point. Tab plugins are separate packages installed as sibling directories, so import it via a relative path (or vendor the file — it's dependency-free):
 
 ```typescript
-import { sanitizeLine } from "pi-sidepanel";
+import { sanitizeLine } from "../pi-sidepanel/sanitize.ts";
 ```
 
 The framework also guards against `null`/`undefined`/non-array render results, non-string array items, and thrown exceptions. In all cases the box shape (borders, corners, consistent height) is maintained.
@@ -193,13 +217,17 @@ export default function (pi: ExtensionAPI) {
     setTheme(t: any): void { /* optional */ },
   };
 
-  pi.on("session_start", () => {
+  function registerTab() {
     pi.events.emit("sidepanel:register", {
       id: "counter",
       label: "Count",
       component,
     });
-  });
+  }
+
+  pi.on("session_start", () => registerTab());
+  // Required load-order fallback — see Registration above.
+  pi.events.on("sidepanel:ready", () => registerTab());
 
   pi.on("tool_call", () => {
     pi.events.emit("sidepanel:invalidate", { tabId: "counter" });
