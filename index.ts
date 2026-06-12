@@ -419,13 +419,16 @@ class SidepanelComponent implements Component {
 				}
 			} catch (err) {
 				// Render + sanitize failed — show error and pad box
+				// Defensive: guard innerW against NaN/negative (can happen if
+				// the component's render throws and width calculation is bad)
+				const safeW = Math.max(1, Math.floor(innerW) || 1);
 				const errLine = ` ! ${err}`;
-				const truncated = truncateToWidth(errLine, innerW);
+				const truncated = truncateToWidth(errLine, safeW);
 				const vw = visibleWidth(truncated);
-				const padding = " ".repeat(Math.max(0, innerW - vw));
+				const padding = " ".repeat(Math.max(0, safeW - vw));
 				lines.push(B("│") + th.fg("error", truncated) + padding + B("│"));
 				for (let i = 1; i < contentH; i++) {
-					lines.push(B("│") + " ".repeat(innerW) + B("│"));
+					lines.push(B("│") + " ".repeat(safeW) + B("│"));
 				}
 			}
 			}
