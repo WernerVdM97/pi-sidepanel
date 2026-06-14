@@ -108,8 +108,8 @@ jobs:
       matrix:
         node-version: ["22"]
     steps:
-      - uses: actions/checkout@v4
-      - uses: actions/setup-node@v4
+      - uses: actions/checkout@v6
+      - uses: actions/setup-node@v6
         with:
           node-version: ${{ matrix.node-version }}
       - run: node --test test/*.test.ts
@@ -235,10 +235,10 @@ A tab component must satisfy this shape (all methods required unless noted):
 ```typescript
 interface Component {
   /** Return lines for the content area. Width is the inner panel width
-   *  (borders excluded). Must return string[] — never null/undefined.
-   *  Each line must be <= width visible characters. Framework caches
-   *  per-tab by width. */
-  render(width: number): string[];
+   *  (borders excluded); height, when passed, is the inner content height
+   *  in rows. Must return string[] — never null/undefined. Each line must
+   *  be <= width visible characters. Framework caches per-tab by width. */
+  render(width: number, height?: number): string[];
 
   /** Optional. Called for keyboard input when this tab is active.
    *  Arrow keys, Enter, Tab, etc. are consumed by the framework for
